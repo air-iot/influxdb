@@ -2,8 +2,9 @@
 package export
 
 import (
+	"archive/zip"
 	"bufio"
-	"compress/gzip"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -38,10 +39,10 @@ type Command struct {
 	endTime         int64
 	compress        bool
 	lponly          bool
-
-	manifest map[string]struct{}
-	tsmFiles map[string][]string
-	walFiles map[string][]string
+	totalRecords    int64
+	manifest        map[string]struct{}
+	tsmFiles        map[string][]string
+	walFiles        map[string][]string
 }
 
 const stdoutMark = "-"
@@ -287,9 +288,28 @@ func (cmd *Command) write() error {
 	w = bw
 
 	if cmd.compress {
-		gzw := gzip.NewWriter(w)
-		defer gzw.Close()
-		w = gzw
+		//gzw := gzip.NewWriter(w)
+		zw := zip.NewWriter(w)
+		zdw, _ := zw.Create("influx.dat")
+
+		defer func() {
+			meta := map[string]interface{}{
+				"records": cmd.totalRecords,
+			}
+			metaBytes, _ := json.Marshal(meta)
+
+			fmt.Println()
+
+			if zmw, err := zw.Create("meta.json"); err != nil {
+				fmt.Printf("archive/zip: create file meta.json failed, %+v\r\n", err)
+			} else {
+				if _, err = zmw.Write(metaBytes); err != nil {
+					fmt.Printf("archive/zip: write meta.json failed, %+v\r\n", err)
+				}
+			}
+			_ = zw.Close()
+		}()
+		w = zdw
 	}
 
 	// mw is our "meta writer" -- the io.Writer to which meta/out-of-band data
@@ -479,6 +499,8 @@ func (cmd *Command) writeValues(w io.Writer, seriesKey []byte, field string, val
 			// Underlying IO error needs to be returned.
 			return err
 		}
+
+		cmd.totalRecords++
 	}
 
 	return nil
