@@ -62,6 +62,8 @@ type CommandLine struct {
 	osSignals       chan os.Signal
 	historyFilePath string
 
+	DataOnly bool
+
 	Client         *client.Client
 	ClientConfig   client.Config // Client config options.
 	ImporterConfig v8.Config     // Importer configuration options.
@@ -175,6 +177,7 @@ func (c *CommandLine) Run() error {
 		config.URL = c.URL
 
 		i := v8.NewImporter(config)
+		i.Database(c.Database)
 		if err := i.Import(); err != nil {
 			err = fmt.Errorf("ERROR: %s", err)
 			return err

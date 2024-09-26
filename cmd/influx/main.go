@@ -60,6 +60,7 @@ func main() {
 	fs.IntVar(&c.ImporterConfig.PPS, "pps", defaultPPS, "How many points per second the import will allow.  By default it is zero and will not throttle importing.")
 	fs.StringVar(&c.ImporterConfig.Path, "path", "", "path to the file to import")
 	fs.BoolVar(&c.ImporterConfig.Compressed, "compressed", false, "set to true if the import file is compressed")
+	fs.BoolVar(&c.ImporterConfig.DataOnly, "dataonly", false, "导入文件中只包含数据(不包含创建数据库等语句时)使用")
 
 	// Define our own custom usage to print
 	fs.Usage = func() {
@@ -104,6 +105,9 @@ func main() {
 			Path to file to import
   -compressed
 			Set to true if the import file is compressed
+  
+  -dataonly
+			导入文件中只包含数据(不包含创建数据库等语句时)使用
 
 Examples:
 
