@@ -176,6 +176,10 @@ func (c *CommandLine) Run() error {
 		config.Config = c.ClientConfig
 		config.URL = c.URL
 
+		if config.DataOnly && c.Database == "" {
+			return fmt.Errorf("ERROR: dataonly 模式下必须指定 database 参数")
+		}
+
 		i := v8.NewImporter(config)
 		i.Database(c.Database)
 		if err := i.Import(); err != nil {
