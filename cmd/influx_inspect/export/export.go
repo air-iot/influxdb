@@ -4,7 +4,9 @@ package export
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -43,6 +45,17 @@ type Command struct {
 	manifest        map[string]struct{}
 	tsmFiles        map[string][]string
 	walFiles        map[string][]string
+
+	origin           bool
+	tableMappingFile string
+	tableIgnores     string
+
+	// 表名映射
+	// key: 原始表名
+	// value: 映射后表名
+	tableMappings map[string]string
+	// 忽略的表
+	ignoreTables map[string]struct{}
 }
 
 const stdoutMark = "-"
@@ -56,6 +69,9 @@ func NewCommand() *Command {
 		manifest: make(map[string]struct{}),
 		tsmFiles: make(map[string][]string),
 		walFiles: make(map[string][]string),
+
+		tableMappings: make(map[string]string),
+		ignoreTables:  make(map[string]struct{}),
 	}
 }
 
@@ -77,6 +93,10 @@ func (cmd *Command) Run(args ...string) error {
 	fs.StringVar(&end, "end", "", "Optional: the end time to export (RFC3339 format)")
 	fs.BoolVar(&cmd.lponly, "lponly", false, "Only export line protocol")
 	fs.BoolVar(&cmd.compress, "compress", false, "Compress the output")
+
+	fs.BoolVar(&cmd.origin, "origin", true, "使用原始文件格式导出数据")
+	fs.StringVar(&cmd.tableMappingFile, "mapping", "", "表名映射文件. 每行对应一个映射关系, 格式为: 原始表名=映射后表名")
+	fs.StringVar(&cmd.tableIgnores, "ignores", "", "忽略的表名列表. 多个表名之间使用 ',' 分隔")
 
 	fs.SetOutput(cmd.Stdout)
 	fs.Usage = func() {
@@ -112,6 +132,62 @@ func (cmd *Command) Run(args ...string) error {
 
 	if err := cmd.validate(); err != nil {
 		return err
+	}
+
+	if cmd.tableMappingFile != "" {
+		data, err := os.ReadFile(cmd.tableMappingFile)
+		if err != nil {
+			return fmt.Errorf("读取表名映射文件 '%s' 失败, %+v", cmd.tableMappingFile, err)
+		}
+
+		if len(data) == 0 {
+			fmt.Fprintf(cmd.Stdout, "表名映射文件 '%s' 的内容为空\n\n", cmd.tableMappingFile)
+		} else {
+			buf := bufio.NewReader(bytes.NewReader(data))
+			lineNum := -1
+			for {
+				lineNum++
+				line, _, err := buf.ReadLine()
+				if errors.Is(err, io.EOF) {
+					break
+				}
+
+				if len(line) == 0 {
+					continue
+				}
+
+				sLine := string(line)
+				index := strings.Index(sLine, "=")
+				if index == -1 {
+					return fmt.Errorf("表名映射文件中第 %d 行内容 '%s' 格式不正确", lineNum, sLine)
+				}
+
+				fields := strings.Split(sLine, "=")
+				src := strings.TrimSpace(fields[0])
+				dst := strings.TrimSpace(fields[1])
+
+				if src == "" || dst == "" {
+					return fmt.Errorf("表名映射文件中第 %d 行内容 '%s' 格式不正确", lineNum, sLine)
+				}
+
+				if v, ok := cmd.tableMappings[src]; ok {
+					return fmt.Errorf("表名映射文件中第 %d 行内容 '%s', 表 '%s -> %s' 的映射关系已存在", lineNum, sLine, src, v)
+				}
+
+				cmd.tableMappings[src] = dst
+			}
+		}
+	}
+
+	if cmd.tableIgnores != "" {
+		tables := strings.Split(strings.TrimSpace(cmd.tableIgnores), ",")
+		for i := range tables {
+			t := strings.TrimSpace(tables[i])
+			if t == "" {
+				return fmt.Errorf("参数 -tableIgnores 的值 '%s' 不正确, 存在空表名", cmd.tableIgnores)
+			}
+			cmd.ignoreTables[t] = struct{}{}
+		}
 	}
 
 	return cmd.export()
@@ -290,26 +366,30 @@ func (cmd *Command) write() error {
 	if cmd.compress {
 		//gzw := gzip.NewWriter(w)
 		zw := zip.NewWriter(w)
-		zdw, _ := zw.Create("influx.dat")
+
+		if !cmd.origin {
+			zdw, _ := zw.Create("influx.dat")
+			w = zdw
+		}
 
 		defer func() {
-			meta := map[string]interface{}{
-				"records": cmd.totalRecords,
-			}
-			metaBytes, _ := json.Marshal(meta)
+			if !cmd.origin {
+				meta := map[string]interface{}{
+					"records": cmd.totalRecords,
+				}
+				metaBytes, _ := json.Marshal(meta)
 
-			fmt.Println()
-
-			if zmw, err := zw.Create("meta.json"); err != nil {
-				fmt.Printf("archive/zip: create file meta.json failed, %+v\r\n", err)
-			} else {
-				if _, err = zmw.Write(metaBytes); err != nil {
-					fmt.Printf("archive/zip: write meta.json failed, %+v\r\n", err)
+				if zmw, err := zw.Create("meta.json"); err != nil {
+					fmt.Printf("archive/zip: create file meta.json failed, %+v\r\n", err)
+				} else {
+					if _, err = zmw.Write(metaBytes); err != nil {
+						fmt.Printf("archive/zip: write meta.json failed, %+v\r\n", err)
+					}
 				}
 			}
+
 			_ = zw.Close()
 		}()
-		w = zdw
 	}
 
 	// mw is our "meta writer" -- the io.Writer to which meta/out-of-band data
@@ -368,12 +448,28 @@ func (cmd *Command) exportTSMFile(tsmFilePath string, w io.Writer) error {
 
 	for i := 0; i < r.KeyCount(); i++ {
 		key, _ := r.KeyAt(i)
+		measurement, field := tsm1.SeriesAndFieldFromCompositeKey(key)
+
+		measurementFields := strings.SplitN(string(measurement), ",", 2)
+		table := measurementFields[0]
+		// 忽略表
+		if _, ok := cmd.ignoreTables[table]; ok {
+			continue
+		}
+
+		// 映射表
+		if v, ok := cmd.tableMappings["__ALL__"]; ok {
+			measurement = []byte(v + "," + measurementFields[1])
+		} else if v, ok := cmd.tableMappings[table]; ok {
+			measurement = []byte(v + "," + measurementFields[1])
+		}
+
 		values, err := r.ReadAll(key)
 		if err != nil {
 			fmt.Fprintf(cmd.Stderr, "unable to read key %q in %s, skipping: %s\n", string(key), tsmFilePath, err.Error())
 			continue
 		}
-		measurement, field := tsm1.SeriesAndFieldFromCompositeKey(key)
+
 		field = escape.Bytes(field)
 
 		if err := cmd.writeValues(w, measurement, string(field), values); err != nil {
@@ -443,6 +539,20 @@ func (cmd *Command) exportWALFile(walFilePath string, w io.Writer, warnDelete fu
 				measurement, field := tsm1.SeriesAndFieldFromCompositeKey([]byte(key))
 				// measurements are stored escaped, field names are not
 				field = escape.Bytes(field)
+
+				measurementFields := strings.SplitN(string(measurement), ",", 2)
+				table := measurementFields[0]
+				// 忽略表
+				if _, ok := cmd.ignoreTables[table]; ok {
+					continue
+				}
+
+				// 映射表
+				if v, ok := cmd.tableMappings["__ALL__"]; ok {
+					measurement = []byte(v + "," + measurementFields[1])
+				} else if v, ok := cmd.tableMappings[table]; ok {
+					measurement = []byte(v + "," + measurementFields[1])
+				}
 
 				if err := cmd.writeValues(w, measurement, string(field), values); err != nil {
 					// An error from writeValues indicates an IO error, which should be returned.
