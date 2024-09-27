@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -365,11 +366,15 @@ func (cmd *Command) write() error {
 
 	if cmd.compress {
 		//gzw := gzip.NewWriter(w)
-		zw := zip.NewWriter(w)
-
+		var zw *zip.Writer
+		var gzw *gzip.Writer
 		if !cmd.origin {
+			zw = zip.NewWriter(w)
 			zdw, _ := zw.Create("influx.dat")
 			w = zdw
+		} else {
+			gzw = gzip.NewWriter(w)
+			w = gzw
 		}
 
 		defer func() {
@@ -388,7 +393,11 @@ func (cmd *Command) write() error {
 				}
 			}
 
-			_ = zw.Close()
+			if !cmd.origin {
+				_ = zw.Close()
+			} else {
+				_ = gzw.Close()
+			}
 		}()
 	}
 
