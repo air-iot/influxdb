@@ -268,6 +268,26 @@ func (e *Exporter) write() error {
 		}
 	}
 
+	startTime := time.UnixMilli(e.startTime)
+	endTime := time.UnixMilli(e.endTime)
+
+	backupInfo := map[string]interface{}{
+		"projectId": e.database,
+		"time":      time.Now(),
+		"startTime": startTime,
+		"endTime":   endTime,
+	}
+	backupBytes, _ := json.Marshal(backupInfo)
+
+	// backup.json
+	if zmw, err := zw.Create("backup.json"); err != nil {
+		return fmt.Errorf("创建备份信息文件失败, %+v", err)
+	} else {
+		if _, err = zmw.Write(backupBytes); err != nil {
+			return fmt.Errorf("生成备份信息失败, %+v", err)
+		}
+	}
+
 	return nil
 }
 
