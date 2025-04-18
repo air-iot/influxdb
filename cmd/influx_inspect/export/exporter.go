@@ -235,18 +235,31 @@ func (e *Exporter) write() error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			fmt.Printf("final close error: %s\r\n", err)
+		}
+	}()
 	w = f
 
 	bw := bufio.NewWriterSize(w, 1024*1024)
-	defer bw.Flush()
+	defer func() {
+		if err := bw.Flush(); err != nil {
+			fmt.Printf("flush buffer error: %s\r\n", err)
+		}
+	}()
 	w = bw
 
 	zw := zip.NewWriter(w)
 	zdw, _ := zw.Create("influx.dat")
 
 	defer func() {
-		_ = zw.Close()
+		if err := zw.Flush(); err != nil {
+			fmt.Printf("final flush error: %+v\n", err)
+		}
+		if err := zw.Close(); err != nil {
+			fmt.Printf("close error: %+v\n", err)
+		}
 	}()
 	w = zdw
 
