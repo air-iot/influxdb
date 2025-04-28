@@ -281,8 +281,8 @@ func (e *Exporter) write() error {
 		}
 	}
 
-	startTime := time.UnixMilli(e.startTime)
-	endTime := time.UnixMilli(e.endTime)
+	startTime := time.Unix(0, e.startTime)
+	endTime := time.Unix(0, e.endTime)
 
 	backupInfo := map[string]interface{}{
 		"projectId": e.database,
